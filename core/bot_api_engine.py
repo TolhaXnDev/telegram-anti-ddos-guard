@@ -1,11 +1,12 @@
 """
-Standard Telegram Bot API Engine (HTML Mode & Fallback)
-সব মেসেজ, বাটন ও অ্যাডমিন কমান্ড ১০০% নির্ভরযোগ্যভাবে হ্যান্ডেল করার ইঞ্জিন
+Standard Telegram Bot API Engine (Public & Private Channels/Groups Support)
+পাবলিক ও প্রাইভেট চ্যানেল এবং গ্রুপ অটো-ডিটেকশন ও সম্পূর্ণ সুরক্ষা ইঞ্জিন
 """
 import asyncio
 import aiohttp
 import json
 import time
+import re
 
 import config
 from core.database import (
@@ -41,7 +42,6 @@ async def send_msg(session, chat_id, text, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = reply_markup
     res = await call_api(session, "sendMessage", payload)
-    # যদি কোনো ফরম্যাটিংয়ের কারণে এরর দেয়, তবে প্লেইন টেক্সট হিসেবে পাঠাবে
     if not res.get("ok") and "can't parse" in res.get("description", "").lower():
         payload.pop("parse_mode", None)
         res = await call_api(session, "sendMessage", payload)
@@ -70,12 +70,13 @@ async def answer_cb(session, cb_id, text=None, alert=False):
     return await call_api(session, "answerCallbackQuery", payload)
 
 # ========================================================
-# বাটন লেআউট তৈরি
+# বাটন লেআউট
 # ========================================================
 def get_start_keyboard(user_id):
     buttons = [
-        [{"text": "➕ চ্যানেল যুক্ত করার নিয়ম", "callback_data": "help_add"}, {"text": "📋 আমার চ্যানেলসমূহ", "callback_data": "my_chans"}],
-        [{"text": "📊 ডিফেন্স রিপোর্ট", "callback_data": "show_stats"}, {"text": "❓ সাহায্য ও সাপোর্ট", "callback_data": "help_info"}]
+        [{"text": "➕ চ্যানেল/গ্রুপ যুক্ত করার নিয়ম", "callback_data": "help_add"}, {"text": "🔒 প্রাইভেট চ্যানেল/গ্রুপ গাইড", "callback_data": "help_private"}],
+        [{"text": "📋 আমার সুরক্ষায় থাকা তালিকা", "callback_data": "my_chans"}, {"text": "📊 লাইভ ডিফেন্স রিপোর্ট", "callback_data": "show_stats"}],
+        [{"text": "❓ সাহায্য ও এফএকিউ", "callback_data": "help_info"}]
     ]
     if user_id == config.ADMIN_ID:
         buttons.append([{"text": "👑 অ্যাডমিন কন্ট্রোল প্যানেল", "callback_data": "open_admin_panel"}])
@@ -84,7 +85,7 @@ def get_start_keyboard(user_id):
 def get_admin_keyboard():
     return {
         "inline_keyboard": [
-            [{"text": "📢 চ্যানেল ম্যানেজমেন্ট", "callback_data": "adm_channels"}, {"text": "👥 ইউজার ম্যানেজমেন্ট", "callback_data": "adm_users"}],
+            [{"text": "📢 চ্যানেল/গ্রুপ তালিকা", "callback_data": "adm_channels"}, {"text": "👥 ইউজার ম্যানেজমেন্ট", "callback_data": "adm_users"}],
             [{"text": "⚔️ আক্রমণ হিস্ট্রি", "callback_data": "adm_attacks"}, {"text": "🔄 ইঞ্জিন সিঙ্ক", "callback_data": "adm_sync"}],
             [{"text": "📣 ব্রডকাস্ট নোটিশ গাইড", "callback_data": "adm_broadcast_help"}]
         ]
@@ -94,7 +95,7 @@ def get_admin_keyboard():
 # মূল পোলিং ইঞ্জিন
 # ========================================================
 async def run_bot_polling(shield_engine):
-    print("[*] Telegram Bot API Long-Polling ইঞ্জিন চালু হচ্ছে...")
+    print("[*] Telegram Bot API Long-Polling ইঞ্জিন চালু হচ্ছে (Public & Private Mode)...")
     offset = 0
 
     async with aiohttp.ClientSession() as session:
@@ -103,7 +104,7 @@ async def run_bot_polling(shield_engine):
                 updates_data = await call_api(session, "getUpdates", {
                     "offset": offset,
                     "timeout": 20,
-                    "allowed_updates": ["message", "callback_query"]
+                    "allowed_updates": ["message", "callback_query", "my_chat_member"]
                 })
 
                 if not updates_data.get("ok"):
@@ -113,7 +114,45 @@ async def run_bot_polling(shield_engine):
                 for update in updates_data.get("result", []):
                     offset = update["update_id"] + 1
 
-                    # --- ১. মেসেজ হ্যান্ডলার ---
+                    # ========================================================
+                    # ক) স্বয়ংক্রিয়ভাবে প্রাইভেট/পাবলিক গ্রুপ ও চ্যানেলে অ্যাডমিন শনাক্ত
+                    # ========================================================
+                    if "my_chat_member" in update:
+                        mcm = update["my_chat_member"]
+                        chat = mcm["chat"]
+                        new_status = mcm.get("new_chat_member", {}).get("status")
+                        adder_user = mcm.get("from", {})
+                        adder_id = adder_user.get("id")
+
+                        # বটকে যখন কোনো গ্রুপ বা চ্যানেলে Admin বানানো হয়
+                        if new_status == "administrator" and adder_id:
+                            cid = chat["id"]
+                            title = chat.get("title", "Private Group/Channel")
+                            username = chat.get("username", "")
+
+                            add_channel(cid, title, username, adder_id)
+                            await shield_engine.refresh_channels()
+
+                            # চ্যানেলে/গ্রুপে কনফার্মেশন পাঠানো
+                            await send_msg(session, cid, f"""
+🛡️ <b>𝐀𝐧𝐭𝐢-𝐃𝐃𝐨𝐒 𝐋𝐢𝐯𝐞 𝐒𝐡𝐢𝐞𝐥𝐝 সক্রিয়!</b>
+
+✅ এই {chat.get('type', 'চ্যানেল/গ্রুপ')}টি সফলভাবে স্বয়ংক্রিয় পাহারায় যুক্ত হয়েছে।
+⚔️ এখন থেকে এখানে ভয়েস/ভিডিও চ্যাট চলাকালীন কোনো আক্রমণকারী ডিডক্স মেরে লাইভ ড্রপ করাতে পারবে না!
+""")
+                            # যে অ্যাডমিন যুক্ত করেছে তাকে ইনবক্সে নোটিফিকেশন পাঠানো
+                            await send_msg(session, adder_id, f"""
+🎉 <b>অভিনন্দন! আপনার {chat.get('type', 'চ্যানেল/গ্রুপ')} পাহারায় যুক্ত হয়েছে:</b>
+
+📢 <b>নাম:</b> {title}
+🆔 <b>আইডি:</b> <code>{cid}</code>
+🛡️ <b>স্ট্যাটাস:</b> ২৪/৭ সার্বক্ষণিক প্রটেকশন চালু ✅
+""")
+                        continue
+
+                    # ========================================================
+                    # খ) মেসেজ হ্যান্ডলার
+                    # ========================================================
                     if "message" in update:
                         msg = update["message"]
                         chat_id = msg["chat"]["id"]
@@ -126,6 +165,35 @@ async def run_bot_polling(shield_engine):
 
                         register_user(user_id, user.get("first_name", ""), user.get("username", ""))
 
+                        # ১. প্রাইভেট চ্যানেল থেকে কোনো মেসেজ ফরওয়ার্ড করলে অটো-অ্যাড
+                        if "forward_from_chat" in msg:
+                            fwd = msg["forward_from_chat"]
+                            fwd_id = fwd["id"]
+                            fwd_title = fwd.get("title", "Private Channel")
+                            fwd_user = fwd.get("username", "")
+
+                            await send_msg(session, chat_id, f"🔍 ফরওয়ার্ড করা প্রাইভেট চ্যানেলটি যাচাই করা হচ্ছে (ID: <code>{fwd_id}</code>)...")
+
+                            # চেক করা বট কি অ্যাডমিন আছে কিনা
+                            chat_res = await call_api(session, "getChat", {"chat_id": fwd_id})
+                            if chat_res.get("ok"):
+                                add_channel(fwd_id, fwd_title, fwd_user, user_id)
+                                await shield_engine.refresh_channels()
+                                await send_msg(session, chat_id, f"""
+✅ <b>প্রাইভেট চ্যানেল সফলভাবে যুক্ত হয়েছে!</b>
+
+📢 <b>নাম:</b> {fwd_title}
+🆔 <b>আইডি:</b> <code>{fwd_id}</code>
+🛡️ <b>স্ট্যাটাস:</b> সেন্টিনেল শিল্ড সম্পূর্ণ সক্রিয়!
+""")
+                            else:
+                                await send_msg(session, chat_id, f"""
+⚠️ <b>বট এখনো ওই প্রাইভেট চ্যানেলে Admin নয়!</b>
+
+দয়া করে প্রথমে <b>@LiveShieldXBot</b> কে ওই প্রাইভেট চ্যানেলে বা গ্রুপে <b>Admin</b> বানিয়ে দিন। এরপর আবার ফরওয়ার্ড করুন অথবা <code>/add {fwd_id}</code> লিখুন।
+""")
+                            continue
+
                         # /start
                         if text == "/start":
                             stats = get_stats()
@@ -133,15 +201,15 @@ async def run_bot_polling(shield_engine):
 🛡️ <b>স্বাগতম {user.get('first_name', 'ইউজার')}!</b>
 আমি <b>𝐀𝐧𝐭𝐢-𝐃𝐃𝐨𝐒 𝐋𝐢𝐯𝐞 𝐒𝐡𝐢𝐞𝐥𝐝 🛡️</b> — টেলিগ্রামের অফিসিয়াল লাইভ স্ট্রিম সিকিউরিটি গার্ড।
 
-আপনার পাবলিক চ্যানেলে লাইভ চলাকালীন কোনো হ্যাকার ডিডক্স (<code>GROUPCALL_INVALID</code>) মারলে আমাদের ক্লাউড সিস্টেম <b>৩০০ মিলি-সেকেন্ডে</b> লাইভ রিস্টোর করে অ্যাটাক সম্পূর্ণ ব্যর্থ করে দেয়।
+আপনার পাবলিক বা প্রাইভেট চ্যানেল এবং গ্রুপে লাইভ চলাকালীন কোনো হ্যাকার ডিডক্স (<code>GROUPCALL_INVALID</code>) মারলে আমাদের ক্লাউড সিস্টেম <b>৩০০ মিলি-সেকেন্ডে</b> লাইভ রিস্টোর করে অ্যাটাক সম্পূর্ণ ব্যর্থ করে দেয়।
 
 📊 <b>লাইভ সিস্টেম হেলথ:</b>
-• 📡 সক্রিয় পাহারায় চ্যানেল: <code>{stats['total_protected_channels']}</code> টি
+• 📡 সক্রিয় পাহারায় চ্যানেল ও গ্রুপ: <code>{stats['total_protected_channels']}</code> টি
 • ⚔️ প্রতিহত করা আক্রমণ: <code>{stats['total_attacks_blocked']}</code> টি
 • 👥 মোট নিবন্ধিত ইউজার: <code>{stats['total_users']}</code> জন
 • ⚡ গড় রিকভারি গতি: &lt; ৩০০ ms
 
-👇 <b>নিচের বাটন চেপে আপনার চ্যানেলটি এখনই সুরক্ষিত করুন:</b>
+👇 <b>নিচের বাটন চেপে আপনার চ্যানেল বা গ্রুপ এখনই সুরক্ষিত করুন:</b>
 """
                             await send_msg(session, chat_id, resp_text, get_start_keyboard(user_id))
 
@@ -156,7 +224,7 @@ async def run_bot_polling(shield_engine):
 সেন্টিনেল ক্লাউড ইঞ্জিনের সমস্ত ম্যানেজমেন্ট ও সেটিংস:
 
 📊 <b>সার্ভার পরিসংখ্যান:</b>
-• 📡 মোট প্রোটেক্টেড চ্যানেল: <code>{stats['total_protected_channels']}</code> টি
+• 📡 মোট প্রোটেক্টেড চ্যানেল ও গ্রুপ: <code>{stats['total_protected_channels']}</code> টি
 • 👥 মোট রেজিস্টার্ড ইউজার: <code>{stats['total_users']}</code> জন
 • ⚔️ প্রতিহত করা আক্রমণ: <code>{stats['total_attacks_blocked']}</code> টি
 • 🔒 সিকিউরিটি শিল্ড: <b>সর্বোচ্চ লেভেল (Active)</b>
@@ -165,43 +233,87 @@ async def run_bot_polling(shield_engine):
 """
                                 await send_msg(session, chat_id, adm_text, get_admin_keyboard())
 
-                        # /add @channel
+                        # /add <username_or_id_or_link>
                         elif text.startswith("/add"):
                             parts = text.split(maxsplit=1)
                             if len(parts) < 2:
-                                await send_msg(session, chat_id, "⚠️ <b>ভুল ফরম্যাট!</b>\nদয়া করে এভাবে লিখুন:\n<code>/add @your_channel_username</code>")
+                                await send_msg(session, chat_id, """
+⚠️ <b>চ্যানেল বা গ্রুপ যুক্ত করার সঠিক নিয়ম:</b>
+
+১. <b>পাবলিক হলে:</b>
+<code>/add @channel_username</code>
+
+২. <b>প্রাইভেট হলে (চ্যানেল/গ্রুপ আইডি দিয়ে):</b>
+<code>/add -1001234567890</code>
+
+৩. <b>অথবা সবচেয়ে সহজ:</b>
+প্রাইভেট চ্যানেল থেকে যেকোনো একটি মেসেজ এই বটে ফরওয়ার্ড (Forward) করে দিন!
+""")
                             else:
                                 target = parts[1].strip()
-                                await send_msg(session, chat_id, f"🔍 <code>{target}</code> চ্যানেলটি যাচাই করা হচ্ছে...")
+                                await send_msg(session, chat_id, f"🔍 <code>{target}</code> যাচাই করা হচ্ছে...")
+
+                                # সংখ্যা বা আইডি হলে সরাসরি getChat দিয়ে চেক
+                                is_numeric_id = False
+                                check_id = target
+                                if re.match(r"^-?\d+$", target):
+                                    is_numeric_id = True
+                                    check_id = int(target)
+                                    if not str(check_id).startswith("-100"):
+                                        check_id = int(f"-100{abs(check_id)}")
+
                                 try:
-                                    channel_entity = await shield_engine.assistant_client.get_entity(target)
-                                    cid = channel_entity.id if str(channel_entity.id).startswith("-100") else int(f"-100{channel_entity.id}")
-                                    title = getattr(channel_entity, 'title', target)
-                                    username = getattr(channel_entity, 'username', '')
+                                    chat_info = await call_api(session, "getChat", {"chat_id": check_id})
+                                    if chat_info.get("ok"):
+                                        cdata = chat_info["result"]
+                                        cid = cdata["id"]
+                                        ctitle = cdata.get("title", target)
+                                        cusername = cdata.get("username", "")
 
-                                    add_channel(cid, title, username, user_id)
-                                    await shield_engine.refresh_channels()
+                                        add_channel(cid, ctitle, cusername, user_id)
+                                        await shield_engine.refresh_channels()
 
-                                    await send_msg(session, chat_id, f"""
-✅ <b>চ্যানেল সফলভাবে যুক্ত হয়েছে!</b>
+                                        await send_msg(session, chat_id, f"""
+✅ <b>সফলভাবে সুরক্ষায় যুক্ত হয়েছে!</b>
 
-📢 <b>চ্যানেল:</b> {title} (<code>@{username or 'Private'}</code>)
+📢 <b>নাম:</b> {ctitle}
+🆔 <b>আইডি:</b> <code>{cid}</code>
+🔒 <b>টাইপ:</b> {cdata.get('type', 'Channel/Group').capitalize()}
 🛡️ <b>স্ট্যাটাস:</b> ২৪/৭ সেন্টিনেল শিল্ড সম্পূর্ণ সক্রিয়!
-⚔️ এখন থেকে এই চ্যানেলে লাইভ চলাকালীন কোনো আক্রমণকারী ডিডক্স মারলে তা মুহূর্তেই নিষ্ক্রিয় হয়ে যাবে।
+⚔️ এখন থেকে এখানে লাইভ চালালে আক্রমণকারীর যেকোনো ডিডক্স মুহূর্তেই নিষ্ক্রিয় হয়ে যাবে।
 """)
+                                    else:
+                                        # যদি getChat সরাসরি না পায়, সহকারী অ্যাকাউন্ট দিয়ে ট্রাই
+                                        if hasattr(shield_engine, "assistant_client") and shield_engine.assistant_client:
+                                            channel_entity = await shield_engine.assistant_client.get_entity(target)
+                                            cid = channel_entity.id if str(channel_entity.id).startswith("-100") else int(f"-100{channel_entity.id}")
+                                            title = getattr(channel_entity, 'title', target)
+                                            username = getattr(channel_entity, 'username', '')
+
+                                            add_channel(cid, title, username, user_id)
+                                            await shield_engine.refresh_channels()
+
+                                            await send_msg(session, chat_id, f"""
+✅ <b>সফলভাবে সুরক্ষায় যুক্ত হয়েছে!</b>
+
+📢 <b>নাম:</b> {title} (<code>@{username or 'Private'}</code>)
+🛡️ <b>স্ট্যাটাস:</b> ২৪/৭ সেন্টিনেল শিল্ড সম্পূর্ণ সক্রিয়!
+""")
+                                        else:
+                                            await send_msg(session, chat_id, f"❌ চ্যানেল বা গ্রুপটি খুঁজে পাওয়া যায়নি!\n\n💡 নিশ্চিত করুন <b>@LiveShieldXBot</b> কে ওই প্রাইভেট চ্যানেল বা গ্রুপে <b>Admin</b> বানানো হয়েছে।")
                                 except Exception as e:
-                                    await send_msg(session, chat_id, f"❌ চ্যানেল যুক্ত করতে সমস্যা হয়েছে:\n<code>{str(e)}</code>\n\n💡 নিশ্চিত করুন চ্যানেলটি পাবলিক এবং আমাদের সহকারী একাউন্ট ওই চ্যানেলে প্রবেশাধিকার রাখে।")
+                                    await send_msg(session, chat_id, f"❌ যুক্ত করতে সমস্যা হয়েছে:\n<code>{str(e)}</code>\n\n💡 নিশ্চিত করুন বট ওই গ্রুপ বা চ্যানেলে Admin হিসেবে যুক্ত আছে।")
 
                         # /my_channels
                         elif text == "/my_channels":
                             chans = get_user_channels(user_id)
                             if not chans:
-                                await send_msg(session, chat_id, "⚠️ আপনার সুরক্ষায় এখনো কোনো চ্যানেল যুক্ত করা হয়নি।\nচ্যানেল যুক্ত করতে লিখুন: <code>/add @your_channel</code>")
+                                await send_msg(session, chat_id, "⚠️ আপনার সুরক্ষায় এখনো কোনো চ্যানেল বা গ্রুপ যুক্ত করা হয়নি।\nযুক্ত করতে লিখুন: <code>/add @channel</code> অথবা প্রাইভেট আইডি।")
                             else:
-                                msg_c = "📋 <b>আপনার সুরক্ষায় থাকা চ্যানেলগুলো:</b>\n\n"
+                                msg_c = "📋 <b>আপনার সুরক্ষায় থাকা চ্যানেল ও গ্রুপসমূহ:</b>\n\n"
                                 for i, c in enumerate(chans, 1):
-                                    msg_c += f"{i}. <b>{c['channel_title']}</b> (<code>@{c['channel_username'] or c['channel_id']}</code>)\n   🛡️ স্ট্যাটাস: সার্বক্ষণিক পাহারা চলছে ✅\n\n"
-                                msg_c += "চ্যানেল সরাতে লিখুন: <code>/remove @channel</code>"
+                                    msg_c += f"{i}. 📢 <b>{c['channel_title']}</b> (<code>@{c['channel_username'] or c['channel_id']}</code>)\n   🛡️ স্ট্যাটাস: সার্বক্ষণিক পাহারা চলছে ✅\n\n"
+                                msg_c += "সরাতে লিখুন: <code>/remove @channel_or_id</code>"
                                 await send_msg(session, chat_id, msg_c)
 
                         # /stats
@@ -210,7 +322,7 @@ async def run_bot_polling(shield_engine):
                             await send_msg(session, chat_id, f"""
 📊 <b>গ্লোবাল অ্যান্টি-ডিডক্স ডিফেন্স রিপোর্ট:</b>
 
-📡 মোট প্রোটেক্টেড চ্যানেল: <code>{stats['total_protected_channels']}</code> টি
+📡 মোট প্রোটেক্টেড চ্যানেল ও গ্রুপ: <code>{stats['total_protected_channels']}</code> টি
 👥 মোট রেজিস্টার্ড ইউজার: <code>{stats['total_users']}</code> জন
 🛡️ মোট প্রতিহত আক্রমণ: <code>{stats['total_attacks_blocked']}</code> টি
 ⚡ গড় রিকভারি গতি: &lt; ৩০০ মিলি-সেকেন্ড
@@ -223,9 +335,11 @@ async def run_bot_polling(shield_engine):
 📖 <b>কমান্ড তালিকা ও নির্দেশিকা:</b>
 
 • <code>/start</code> — বট চালু করুন ও মূল মেনু দেখুন
-• <code>/add @channel</code> — আপনার চ্যানেল সুরক্ষায় যুক্ত করুন
-• <code>/my_channels</code> — আপনার চ্যানেলগুলোর স্ট্যাটাস দেখুন
-• <code>/remove @channel</code> — চ্যানেল পাহারা থেকে সরান
+• <code>/add @username</code> — পাবলিক চ্যানেল/গ্রুপ যুক্ত করুন
+• <code>/add -100xxxxxxx</code> — প্রাইভেট চ্যানেল/গ্রুপ যুক্ত করুন
+• <b>মেসেজ ফরওয়ার্ড</b> — প্রাইভেট চ্যানেল থেকে যেকোনো পোস্ট ফরওয়ার্ড করলেই অটো-অ্যাড
+• <code>/my_channels</code> — আপনার তালিকার স্ট্যাটাস দেখুন
+• <code>/remove @channel</code> — পাহারা থেকে সরান
 • <code>/stats</code> — লাইভ আক্রমণ প্রতিহত করার পরিসংখ্যান
 """)
 
@@ -257,7 +371,9 @@ async def run_bot_polling(shield_engine):
                             unban_user(target_u)
                             await send_msg(session, chat_id, f"✅ ইউজার <code>{target_u}</code> এর ব্যান তুলে নেওয়া হয়েছে।")
 
-                    # --- ২. বাটন কলব্যাক হ্যান্ডলার ---
+                    # ========================================================
+                    # গ) বাটন কলব্যাক হ্যান্ডলার
+                    # ========================================================
                     elif "callback_query" in update:
                         cb = update["callback_query"]
                         cb_id = cb["id"]
@@ -270,41 +386,53 @@ async def run_bot_polling(shield_engine):
 
                         if cb_data == "show_stats":
                             stats = get_stats()
-                            await answer_cb(session, cb_id, f"🛡️ ব্লকড: {stats['total_attacks_blocked']} টি | 📡 চ্যানেল: {stats['total_protected_channels']} টি", alert=True)
+                            await answer_cb(session, cb_id, f"🛡️ ব্লকড: {stats['total_attacks_blocked']} টি | 📡 চ্যানেল/গ্রুপ: {stats['total_protected_channels']} টি", alert=True)
 
                         elif cb_data == "help_add":
                             await answer_cb(session, cb_id)
                             await send_msg(session, chat_id, """
-📌 <b>চ্যানেল সুরক্ষিত করার ৩টি সহজ ধাপ:</b>
+📌 <b>পাবলিক চ্যানেল বা গ্রুপ যুক্ত করার নিয়ম:</b>
 
-১. প্রথমে এই বট (<code>@LiveShieldXBot</code>) কে আপনার পাবলিক চ্যানেলে <b>Admin</b> হিসেবে যুক্ত করুন।
+১. প্রথমে <b>@LiveShieldXBot</b> কে আপনার চ্যানেল বা গ্রুপে <b>Admin</b> হিসেবে যুক্ত করুন।
 ২. এডমিন পারমিশনে <b>'Manage Live Streams' (ভিডিও চ্যাট পরিচালনা)</b> অন রাখুন।
 ৩. এরপর এই চ্যাটে মেসেজ দিন:
-<code>/add @your_channel_username</code>
+<code>/add @your_channel_or_group</code>
+""")
 
-বটটি স্বয়ংক্রিয়ভাবে চ্যানেল ভেরিফাই করে সার্বক্ষণিক পাহারায় নিয়ে নেবে!
+                        elif cb_data == "help_private":
+                            await answer_cb(session, cb_id)
+                            await send_msg(session, chat_id, """
+🔒 <b>প্রাইভেট চ্যানেল বা গ্রুপ যুক্ত করার ৩টি উপায়:</b>
+
+<b>উপায় ১ (সবচেয়ে সহজ - অটো ডিটেক্ট):</b>
+আপনার প্রাইভেট গ্রুপ বা চ্যানেলে <b>@LiveShieldXBot</b> কে <b>Admin</b> হিসেবে যুক্ত করুন। বট নিজে থেকেই শনাক্ত করে পাহারায় নিয়ে নেবে!
+
+<b>উপায় ২ (মেসেজ ফরওয়ার্ড):</b>
+আপনার প্রাইভেট চ্যানেল থেকে যেকোনো একটি মেসেজ কপি না করে সরাসরি এই বটে <b>Forward</b> করে দিন। বট সাথে সাথে চ্যানেলটি যুক্ত করে নেবে।
+
+<b>উপায় ৩ (আইডি দিয়ে):</b>
+প্রাইভেট চ্যানেলের আইডি জানা থাকলে লিখুন:
+<code>/add -1001234567890</code>
 """)
 
                         elif cb_data == "my_chans":
                             chans = get_user_channels(user_id)
                             if not chans:
-                                await answer_cb(session, cb_id, "⚠️ আপনার কোনো চ্যানেল যুক্ত নেই।", alert=True)
+                                await answer_cb(session, cb_id, "⚠️ আপনার কোনো চ্যানেল বা গ্রুপ যুক্ত নেই।", alert=True)
                             else:
                                 await answer_cb(session, cb_id)
-                                msg_c = "📋 <b>আপনার সুরক্ষায় থাকা চ্যানেলগুলো:</b>\n\n"
+                                msg_c = "📋 <b>আপনার সুরক্ষায় থাকা চ্যানেল ও গ্রুপসমূহ:</b>\n\n"
                                 for i, c in enumerate(chans, 1):
-                                    msg_c += f"{i}. <b>{c['channel_title']}</b> (<code>@{c['channel_username'] or c['channel_id']}</code>)\n   🛡️ স্ট্যাটাস: সার্বক্ষণিক পাহারা চলছে ✅\n\n"
+                                    msg_c += f"{i}. 📢 <b>{c['channel_title']}</b> (<code>@{c['channel_username'] or c['channel_id']}</code>)\n   🛡️ স্ট্যাটাস: সার্বক্ষণিক পাহারা চলছে ✅\n\n"
                                 await send_msg(session, chat_id, msg_c)
 
                         elif cb_data == "help_info":
                             await answer_cb(session, cb_id)
                             await send_msg(session, chat_id, """
-📖 <b>𝐀𝐧𝐭𝐢-𝐃𝐃𝐨𝐒 𝐋𝐢𝐯𝐞 𝐒𝐡𝐢𝐞𝐥𝐝 গাইড:</b>
+📖 <b>সচরাচর জিজ্ঞাসিত প্রশ্ন (FAQ):</b>
 
-• <b>চ্যানেল কি পাবলিক থাকতে পারবে?</b>
-হ্যাঁ! চ্যানেল ১০০% পাবলিক থাকবে, কোনো প্রাইভেট বা রিকোয়েস্ট টু জয়েন দরকার নেই।
-• <b>ডিডক্স আক্রমণ হলে কী হবে?</b>
-আক্রমণকারী বুটার দিয়ে লাইভ বন্ধ করতে চাইলে আমাদের ক্লাউড বট ০.৩ সেকেন্ডে নতুন পোর্টে লাইভ রিরুট করে দেবে। আক্রমণকারীর ডিডক্স ব্যর্থ হবে এবং লাইভ সচল থাকবে।
+• <b>প্রাইভেট চ্যানেল/গ্রুপেও কি ডিডক্স আটকাবে?</b>
+হ্যাঁ! পাবলিক হোক বা প্রাইভেট, উভয় জায়গাতেই বট লাইভ ভয়েস/ভিডিও ড্রপ হওয়া মাত্র ৩০০ মিলিসেকেন্ডে রিস্টোর করে অ্যাটাক ব্যর্থ করে দেবে।
 """)
 
                         # অ্যাডমিন প্যানেল বাটনসমূহ
@@ -316,7 +444,7 @@ async def run_bot_polling(shield_engine):
                                 stats = get_stats()
                                 await edit_msg(session, chat_id, mid, f"""
 👑 <b>মাস্টার অ্যাডমিন কন্ট্রোল প্যানেল</b>
-• 📡 চ্যানেল: <code>{stats['total_protected_channels']}</code> টি | 👥 ইউজার: <code>{stats['total_users']}</code> জন | ⚔️ ব্লকড অ্যাটাক: <code>{stats['total_attacks_blocked']}</code> টি
+• 📡 চ্যানেল/গ্রুপ: <code>{stats['total_protected_channels']}</code> টি | 👥 ইউজার: <code>{stats['total_users']}</code> জন | ⚔️ ব্লকড অ্যাটাক: <code>{stats['total_attacks_blocked']}</code> টি
 """, get_admin_keyboard())
 
                         elif cb_data == "adm_channels":
@@ -324,11 +452,11 @@ async def run_bot_polling(shield_engine):
                                 await answer_cb(session, cb_id)
                                 chans = get_active_channels()
                                 if not chans:
-                                    t = "📢 বর্তমানে কোনো চ্যানেল পাহারায় যুক্ত নেই।"
+                                    t = "📢 বর্তমানে কোনো চ্যানেল বা গ্রুপ পাহারায় যুক্ত নেই।"
                                 else:
-                                    t = f"📢 <b>পাহারায় থাকা সমস্ত চ্যানেল ({len(chans)} টি):</b>\n\n"
+                                    t = f"📢 <b>পাহারায় থাকা সমস্ত চ্যানেল ও গ্রুপ ({len(chans)} টি):</b>\n\n"
                                     for i, c in enumerate(chans[:15], 1):
-                                        t += f"{i}. <b>{c['channel_title']}</b> (<code>@{c['channel_username'] or c['channel_id']}</code>)\n   👤 যোগকারী: <code>{c['added_by_user_id']}</code>\n\n"
+                                        t += f"{i}. 📢 <b>{c['channel_title']}</b> (<code>@{c['channel_username'] or c['channel_id']}</code>)\n   👤 যোগকারী: <code>{c['added_by_user_id']}</code>\n\n"
                                 await edit_msg(session, chat_id, mid, t, {"inline_keyboard": [[{"text": "🔙 পেছনে যান", "callback_data": "open_admin_panel"}]]})
 
                         elif cb_data == "adm_users":
