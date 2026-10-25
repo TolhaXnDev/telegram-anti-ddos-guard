@@ -21,7 +21,8 @@ init(autoreset=True)
 service_status = {
     "assistant_connected": False,
     "assistant_name": None,
-    "assistant_id": None
+    "assistant_id": None,
+    "assistant_error": None
 }
 
 def print_banner():
@@ -42,6 +43,7 @@ async def handle_health(request):
         "assistant_connected": service_status["assistant_connected"],
         "assistant_name": service_status["assistant_name"],
         "assistant_id": service_status["assistant_id"],
+        "assistant_error": service_status["assistant_error"],
         "bot": "@LiveShieldXBot",
         "protected_channels": stats["total_protected_channels"],
         "attacks_blocked": stats["total_attacks_blocked"]
@@ -85,11 +87,15 @@ async def main():
                 service_status["assistant_id"] = asst_me.id
                 print(Fore.GREEN + Style.BRIGHT + f"[✓] অ্যাসিস্ট্যান্ট সক্রিয়: {asst_me.first_name} (ID: {asst_me.id})")
             else:
+                service_status["assistant_error"] = "Session string exists but user is not authorized"
                 print(Fore.YELLOW + "[!] অ্যাসিস্ট্যান্ট সেশন অথোরাইজড নয়, একক বট মোডে চলবে।")
                 assistant_client = None
         except Exception as e:
+            service_status["assistant_error"] = str(e)
             print(Fore.YELLOW + f"[!] অ্যাসিস্ট্যান্ট ক্লায়েন্ট সতর্কতা: {e}")
             assistant_client = None
+    else:
+        service_status["assistant_error"] = "SESSION_STRING is empty or not provided"
 
     # ৪. ইঞ্জিন ইনিশিয়ালাইজ
     engine = MultiShieldEngine(
