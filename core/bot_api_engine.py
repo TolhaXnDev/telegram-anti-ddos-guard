@@ -12,7 +12,8 @@ import config
 from core.database import (
     register_user, is_user_banned, ban_user, unban_user,
     get_all_users, get_users_count, add_channel, remove_channel,
-    get_user_channels, get_active_channels, get_stats, get_recent_attacks
+    get_user_channels, get_active_channels, get_stats, get_recent_attacks,
+    get_recent_forensics
 )
 
 API_BASE = f"https://api.telegram.org/bot{config.BOT_TOKEN}"
@@ -86,8 +87,8 @@ def get_admin_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "📢 চ্যানেল/গ্রুপ তালিকা", "callback_data": "adm_channels"}, {"text": "👥 ইউজার ম্যানেজমেন্ট", "callback_data": "adm_users"}],
-            [{"text": "⚔️ আক্রমণ হিস্ট্রি", "callback_data": "adm_attacks"}, {"text": "🔄 ইঞ্জিন সিঙ্ক", "callback_data": "adm_sync"}],
-            [{"text": "📣 ব্রডকাস্ট নোটিশ গাইড", "callback_data": "adm_broadcast_help"}]
+            [{"text": "🕵️ ব্ল্যাকবক্স ফরেনসিক লগ", "callback_data": "adm_forensics"}, {"text": "⚔️ আক্রমণ হিস্ট্রি", "callback_data": "adm_attacks"}],
+            [{"text": "🔄 ইঞ্জিন সিঙ্ক", "callback_data": "adm_sync"}, {"text": "📣 ব্রডকাস্ট নোটিশ গাইড", "callback_data": "adm_broadcast_help"}]
         ]
     }
 
@@ -371,6 +372,20 @@ async def run_bot_polling(shield_engine):
                             unban_user(target_u)
                             await send_msg(session, chat_id, f"✅ ইউজার <code>{target_u}</code> এর ব্যান তুলে নেওয়া হয়েছে।")
 
+                        elif text.startswith("/forensics") and user_id == config.ADMIN_ID:
+                            forensics = get_recent_forensics(limit=5)
+                            if not forensics:
+                                await send_msg(session, chat_id, "🕵️ ব্ল্যাকবক্স ফরেনসিকে এখনো কোনো আক্রমণের রেকর্ড নেই। সিস্টেম সম্পূর্ণ নিরাপদ!")
+                            else:
+                                t = "🕵️ <b>ডিডক্স ব্ল্যাকবক্স ফরেনসিক অডিট রিপোর্ট:</b>\n\n"
+                                for i, f in enumerate(forensics, 1):
+                                    t += f"<b>#{i} | চ্যানেল:</b> {f.get('channel_title', 'Unknown')}\n"
+                                    t += f"• ⚔️ ধরন: <code>{f.get('attack_type', 'UDP_FLOOD')}</code>\n"
+                                    t += f"• ⚡ রিকভারি: <code>{f['recovery_time_ms']}</code> ms\n"
+                                    t += f"• 👤 সন্দেহভাজন: <code>{f.get('suspect_info') or 'None'}</code>\n"
+                                    t += f"• 🕒 সময়: <code>{f.get('timestamp')}</code>\n\n"
+                                await send_msg(session, chat_id, t)
+
                     # ========================================================
                     # গ) বাটন কলব্যাক হ্যান্ডলার
                     # ========================================================
@@ -474,6 +489,22 @@ async def run_bot_polling(shield_engine):
 • <code>/unban &lt;user_id&gt;</code> — ব্যান প্রত্যাহার
 • <code>/broadcast &lt;মেসেজ&gt;</code> — সবাইকে নোটিশ পাঠান
 """
+                                await edit_msg(session, chat_id, mid, t, {"inline_keyboard": [[{"text": "🔙 পেছনে যান", "callback_data": "open_admin_panel"}]]})
+
+                        elif cb_data == "adm_forensics":
+                            if user_id == config.ADMIN_ID:
+                                await answer_cb(session, cb_id)
+                                forensics = get_recent_forensics(limit=5)
+                                if not forensics:
+                                    t = "🕵️ <b>ব্ল্যাকবক্স ফরেনসিক ডাটা:</b>\n\nএখনো কোনো আক্রমণ ঘটেনি। সিস্টেম সম্পূর্ণ নিরাপদ ও সুরক্ষিত!"
+                                else:
+                                    t = "🕵️ <b>ডিডক্স ব্ল্যাকবক্স ফরেনসিক অডিট লগ:</b>\n\n"
+                                    for i, f in enumerate(forensics, 1):
+                                        t += f"{i}. 📢 <b>{f.get('channel_title', 'Unknown')}</b>\n"
+                                        t += f"   ⚔️ ধরন: <code>{f.get('attack_type', 'UDP_FLOOD')}</code>\n"
+                                        t += f"   ⚡ রিকভারি: <code>{f['recovery_time_ms']}</code> ms\n"
+                                        t += f"   👤 সন্দেহভাজন: <code>{f.get('suspect_info') or 'None'}</code>\n"
+                                        t += f"   🕒 সময়: <code>{f.get('timestamp')}</code>\n\n"
                                 await edit_msg(session, chat_id, mid, t, {"inline_keyboard": [[{"text": "🔙 পেছনে যান", "callback_data": "open_admin_panel"}]]})
 
                         elif cb_data == "adm_attacks":

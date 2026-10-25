@@ -11,7 +11,7 @@ from aiohttp import web
 from colorama import Fore, Style, init
 
 import config
-from core.database import init_db, get_stats
+from core.database import init_db, get_stats, get_recent_forensics
 from core.shield_engine import MultiShieldEngine
 from core.bot_api_engine import run_bot_polling
 
@@ -49,12 +49,22 @@ async def handle_health(request):
         "attacks_blocked": stats["total_attacks_blocked"]
     })
 
+async def handle_forensics(request):
+    """ব্ল্যাকবক্স ফরেনসিক অডিট এন্ডপয়েন্ট (আক্রমণ ও সন্দেহভাজনদের ইতিহাস)"""
+    logs = get_recent_forensics(limit=25)
+    return web.json_response({
+        "status": "ok",
+        "total_forensic_records": len(logs),
+        "forensics": logs
+    })
+
 async def start_keepalive_server():
     """রেন্ডারের ফ্রি সার্ভারকে ঘুম থেকে বিরত রাখার ওয়েব পোর্ট"""
     port = int(os.getenv("PORT", "10000"))
     app = web.Application()
     app.router.add_get("/", handle_health)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/forensics", handle_forensics)
     
     runner = web.AppRunner(app)
     await runner.setup()

@@ -41,15 +41,29 @@ def init_db():
             )
         """)
         
-        # আক্রমণ ও প্রতিরোধ লগ টেবিল
+        # আক্রমণ ও ফরেনসিক লগ টেবিল
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS attack_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_id INTEGER NOT NULL,
                 recovery_time_ms INTEGER NOT NULL,
+                attack_type TEXT DEFAULT 'UDP_PORT_FLOOD',
+                suspect_info TEXT DEFAULT '',
+                forensic_json TEXT DEFAULT '{}',
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # কলাম মাইগ্রেশন চেক (পূর্বের ডাটাবেজ থাকলে যাতে এরর না দেয়)
+        cursor.execute("PRAGMA table_info(attack_logs)")
+        existing_cols = [col["name"] for col in cursor.fetchall()]
+        if "attack_type" not in existing_cols:
+            cursor.execute("ALTER TABLE attack_logs ADD COLUMN attack_type TEXT DEFAULT 'UDP_PORT_FLOOD'")
+        if "suspect_info" not in existing_cols:
+            cursor.execute("ALTER TABLE attack_logs ADD COLUMN suspect_info TEXT DEFAULT ''")
+        if "forensic_json" not in existing_cols:
+            cursor.execute("ALTER TABLE attack_logs ADD COLUMN forensic_json TEXT DEFAULT '{}'")
+
         conn.commit()
 
 # --- ইউজার ম্যানেজমেন্ট ---
@@ -145,16 +159,28 @@ def get_user_channels(user_id):
         cursor.execute("SELECT * FROM channels WHERE added_by_user_id = ? AND is_active = 1", (user_id,))
         return [dict(row) for row in cursor.fetchall()]
 
-# --- আক্রমণ ও পরিসংখ্যান ---
-def record_attack(channel_id, recovery_ms):
-    """ডিডক্স আক্রমণ সফলভাবে প্রতিহত করার তথ্য সংরক্ষণ"""
+# --- আক্রমণ ও ফরেনসিক পরিসংখ্যান ---
+def record_attack(channel_id, recovery_ms, attack_type="UDP_PORT_FLOOD", suspect_info="", forensic_json="{}"):
+    """ডিডক্স আক্রমণ ও সম্পূর্ণ ফরেনসিক তথ্য সংরক্ষণ"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO attack_logs (channel_id, recovery_time_ms)
-            VALUES (?, ?)
-        """, (channel_id, recovery_ms))
+            INSERT INTO attack_logs (channel_id, recovery_time_ms, attack_type, suspect_info, forensic_json)
+            VALUES (?, ?, ?, ?, ?)
+        """, (channel_id, recovery_ms, attack_type, suspect_info, forensic_json))
         conn.commit()
+
+def get_recent_forensics(limit=10):
+    """সর্বশেষ ফরেনসিক অ্যাটাক ডাটা বিশ্লেষণ করার জন্য"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT a.*, c.channel_title, c.channel_username 
+            FROM attack_logs a 
+            LEFT JOIN channels c ON a.channel_id = c.channel_id 
+            ORDER BY a.id DESC LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
 
 def get_recent_attacks(limit=5):
     """সাম্প্রতিক প্রতিহত হওয়া আক্রমণের তালিকা"""
