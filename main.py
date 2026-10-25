@@ -1,6 +1,6 @@
 """
 Telegram Anti-DDoS Sentinel Guard - Dual Engine Controller
-পাবলিক বট (@LiveShieldXBot) এবং অ্যাসিস্ট্যান্ট ডিফেন্স ইঞ্জিন (Render, Heroku & Cloud 24/7 Ready)
+পাবলিক বট (@LiveShieldXBot) এবং অ্যাসিস্ট্যান্ট ডিফেন্স ইঞ্জিন (Bulletproof & Crash-Resistant)
 """
 import asyncio
 import os
@@ -27,7 +27,7 @@ def print_banner():
     print(banner)
 
 async def handle_health(request):
-    """Render বা যেকোনো ক্লাউডের জন্য হেলথচেক পোর্ট (২৪/৭ সজাগ রাখার জন্য)"""
+    """Render হেলথচেক পোর্ট (২৪/৭ সজাগ রাখার জন্য)"""
     stats = get_stats()
     return web.json_response({
         "status": "online",
@@ -58,23 +58,25 @@ async def main():
     stats = get_stats()
     print(Fore.CYAN + f"[*] ডাটাবেজ সচল: {stats['total_protected_channels']} টি চ্যানেল সুরক্ষায় আছে।")
 
-    # ২. দ্রুত ক্লাউড ওয়েব পোর্ট চালু করা (Render Healthcheck পাস করার জন্য)
+    # ২. দ্রুত ক্লাউড ওয়েব পোর্ট চালু করা
     await start_keepalive_server()
 
-    # ৩. অ্যাসিস্ট্যান্ট ক্লায়েন্ট চালু করা (Telethon MTProto Engine)
-    print(Fore.CYAN + "[*] অ্যাসিস্ট্যান্ট ডিফেন্স ক্লায়েন্ট কানেক্ট করা হচ্ছে...")
+    # ৩. অ্যাসিস্ট্যান্ট ক্লায়েন্ট সেফ-কানেক্ট (কোনো কারণে এরর দিলে বট যাতে না থামে)
+    assistant_client = None
     if config.SESSION_STRING:
-        print(Fore.GREEN + "[*] ক্লাউড সেশন স্ট্রিং ডিটেক্ট হয়েছে (Headless Mode)")
-        assistant_client = TelegramClient(StringSession(config.SESSION_STRING), config.API_ID, config.API_HASH)
-        await assistant_client.start()
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        assistant_session = os.path.join(base_dir, "assistant_session")
-        assistant_client = TelegramClient(assistant_session, config.API_ID, config.API_HASH)
-        await assistant_client.start(phone=config.PHONE_NUMBER)
-
-    asst_me = await assistant_client.get_me()
-    print(Fore.GREEN + Style.BRIGHT + f"[✓] অ্যাসিস্ট্যান্ট ক্লায়েন্ট সক্রিয়: {asst_me.first_name} (@{asst_me.username or asst_me.phone})")
+        print(Fore.CYAN + "[*] অ্যাসিস্ট্যান্ট ক্লায়েন্ট ইনিশিয়ালাইজ করা হচ্ছে...")
+        try:
+            assistant_client = TelegramClient(StringSession(config.SESSION_STRING), config.API_ID, config.API_HASH)
+            await assistant_client.connect()
+            if await assistant_client.is_user_authorized():
+                asst_me = await assistant_client.get_me()
+                print(Fore.GREEN + Style.BRIGHT + f"[✓] অ্যাসিস্ট্যান্ট সক্রিয়: {asst_me.first_name}")
+            else:
+                print(Fore.YELLOW + "[!] অ্যাসিস্ট্যান্ট সেশন অথোরাইজড নয়, একক বট মোডে চলবে।")
+                assistant_client = None
+        except Exception as e:
+            print(Fore.YELLOW + f"[!] অ্যাসিস্ট্যান্ট ক্লায়েন্ট সতর্কতা (একক বট মোড সক্রিয়): {e}")
+            assistant_client = None
 
     # ৪. ইঞ্জিন ইনিশিয়ালাইজ
     engine = MultiShieldEngine(
@@ -86,17 +88,19 @@ async def main():
     print(Fore.WHITE + f"[*] যে কোনো ইউজার বা বন্ধু বটে গিয়ে /start দিয়ে চ্যানেল সুরক্ষিত করতে পারবে।\n")
 
     # ৫. প্যারালালি ডিফেন্স ইঞ্জিন এবং Bot API পোলিং চালানো
+    tasks = [run_bot_polling(engine)]
+    if assistant_client:
+        tasks.append(engine.start())
+        tasks.append(assistant_client.run_until_disconnected())
+
     try:
-        await asyncio.gather(
-            engine.start(),
-            run_bot_polling(engine),
-            assistant_client.run_until_disconnected()
-        )
+        await asyncio.gather(*tasks)
     except KeyboardInterrupt:
         print(Fore.YELLOW + "\n[!] সিস্টেম বন্ধ করা হচ্ছে...")
     finally:
-        await engine.stop()
-        await assistant_client.disconnect()
+        if assistant_client:
+            await engine.stop()
+            await assistant_client.disconnect()
 
 if __name__ == "__main__":
     try:
