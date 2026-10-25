@@ -113,11 +113,38 @@ class MultiShieldEngine:
         if config.ADMIN_ID:
             recipients.add(config.ADMIN_ID)
 
-        notifier = self.bot_client or self.assistant_client
-        if notifier:
+        # ১. সরাসরি টেলিগ্রাম বট এপিআই দিয়ে ইউজারের ইনবক্সে ইনস্ট্যান্ট এলার্ট পাঠানো
+        import aiohttp
+        bot_token = getattr(config, "BOT_TOKEN", os.getenv("BOT_TOKEN", "8871001046:AAF4us1-ldRP6q6lqEezAGIeM0_EK6xLAYU"))
+        try:
+            async with aiohttp.ClientSession() as session:
+                for uid in recipients:
+                    try:
+                        payload = {"chat_id": uid, "text": alert_text, "parse_mode": "HTML"}
+                        await session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=payload, timeout=5)
+                    except Exception as e_send:
+                        print(Fore.YELLOW + f"[!] বট নোটিশ এরর ({uid}): {e_send}")
+
+                # ক্লাউডফায়ার সেন্টিনেল ডি১ ডাটাবেজে রেকর্ড পাঠানো
+                try:
+                    cf_payload = {
+                        "channel_id": str(channel_data.get("peer", {}).channel_id if hasattr(channel_data.get("peer"), "channel_id") else ""),
+                        "recovery_ms": recovery_ms,
+                        "attack_type": "UDP_PORT_FLOOD",
+                        "suspect_info": suspects_text,
+                        "forensic_data": forensic_data or {}
+                    }
+                    await session.post("https://liveshield-bot.dktolha.workers.dev/api/record_attack", json=cf_payload, timeout=5)
+                except Exception:
+                    pass
+        except Exception as e_session:
+            print(Fore.YELLOW + f"[!] এলার্ট সেশন এরর: {e_session}")
+
+        # ফলব্যাক হিসেবে অ্যাসিস্ট্যান্ট অ্যাকাউন্ট দিয়ে পাঠানো
+        if self.assistant_client:
             for uid in recipients:
                 try:
-                    await notifier.send_message(uid, alert_text)
+                    await self.assistant_client.send_message(uid, alert_text)
                 except Exception:
                     pass
 
@@ -139,6 +166,7 @@ class MultiShieldEngine:
         if not self.assistant_client:
             return
 
+        channel_data["last_known_call_id"] = None
         start_t = time.time()
         random_id = int(time.time() * 1000) & 0x7fffffff
 
