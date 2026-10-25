@@ -13,7 +13,7 @@ from colorama import Fore, Style, init
 import config
 from core.database import init_db, get_stats
 from core.shield_engine import MultiShieldEngine
-from core.telegram_ui import register_bot_handlers
+from core.bot_api_engine import run_bot_polling
 
 init(autoreset=True)
 
@@ -58,17 +58,10 @@ async def main():
     stats = get_stats()
     print(Fore.CYAN + f"[*] ডাটাবেজ সচল: {stats['total_protected_channels']} টি চ্যানেল সুরক্ষায় আছে।")
 
-    # ২. দ্রুত ক্লাউড ওয়েব পোর্ট চালু করা (Render Healthcheck দ্রুত পাস করার জন্য)
+    # ২. দ্রুত ক্লাউড ওয়েব পোর্ট চালু করা (Render Healthcheck পাস করার জন্য)
     await start_keepalive_server()
 
-    # ৩. পাবলিক চ্যাটবট ক্লায়েন্ট চালু করা (@LiveShieldXBot)
-    print(Fore.CYAN + "[*] পাবলিক টেলিগ্রাম বট কানেক্ট করা হচ্ছে...")
-    bot_client = TelegramClient(StringSession(), config.API_ID, config.API_HASH)
-    await bot_client.start(bot_token=config.BOT_TOKEN)
-    bot_me = await bot_client.get_me()
-    print(Fore.GREEN + Style.BRIGHT + f"[✓] পাবলিক বট সফলভাবে সক্রিয়: {bot_me.first_name} (@{bot_me.username})")
-
-    # ৪. অ্যাসিস্ট্যান্ট ক্লায়েন্ট চালু করা (StringSession অথবা লোকাল ফাইল)
+    # ৩. অ্যাসিস্ট্যান্ট ক্লায়েন্ট চালু করা (Telethon MTProto Engine)
     print(Fore.CYAN + "[*] অ্যাসিস্ট্যান্ট ডিফেন্স ক্লায়েন্ট কানেক্ট করা হচ্ছে...")
     if config.SESSION_STRING:
         print(Fore.GREEN + "[*] ক্লাউড সেশন স্ট্রিং ডিটেক্ট হয়েছে (Headless Mode)")
@@ -83,30 +76,26 @@ async def main():
     asst_me = await assistant_client.get_me()
     print(Fore.GREEN + Style.BRIGHT + f"[✓] অ্যাসিস্ট্যান্ট ক্লায়েন্ট সক্রিয়: {asst_me.first_name} (@{asst_me.username or asst_me.phone})")
 
-    # ৫. ইঞ্জিন ও হ্যান্ডলার ইনিশিয়ালাইজ
+    # ৪. ইঞ্জিন ইনিশিয়ালাইজ
     engine = MultiShieldEngine(
         assistant_client=assistant_client,
-        bot_client=bot_client,
         scan_interval=config.SCAN_INTERVAL_SECONDS
     )
-    register_bot_handlers(bot_client, engine)
-    print(Fore.GREEN + "[✓] চ্যাটবট কমান্ড হ্যান্ডলার ও বাটন সক্রিয় হয়েছে।")
 
-    # ৬. ডিফেন্স লুপ চালু
     print(Fore.WHITE + Style.BRIGHT + f"\n[🔥 সাকসেস!] @LiveShieldXBot এখন পুরোপুরি লাইভ ও সক্রিয়!")
     print(Fore.WHITE + f"[*] যে কোনো ইউজার বা বন্ধু বটে গিয়ে /start দিয়ে চ্যানেল সুরক্ষিত করতে পারবে।\n")
 
+    # ৫. প্যারালালি ডিফেন্স ইঞ্জিন এবং Bot API পোলিং চালানো
     try:
         await asyncio.gather(
             engine.start(),
-            bot_client.run_until_disconnected(),
+            run_bot_polling(engine),
             assistant_client.run_until_disconnected()
         )
     except KeyboardInterrupt:
         print(Fore.YELLOW + "\n[!] সিস্টেম বন্ধ করা হচ্ছে...")
     finally:
         await engine.stop()
-        await bot_client.disconnect()
         await assistant_client.disconnect()
 
 if __name__ == "__main__":
