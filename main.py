@@ -11,13 +11,14 @@ from aiohttp import web
 from colorama import Fore, Style, init
 
 import config
-from core.database import init_db, get_stats, get_recent_forensics
+import aiohttp
+from core.database import init_db, get_stats, get_recent_forensics, add_channel
 from core.shield_engine import MultiShieldEngine
-from core.bot_api_engine import run_bot_polling
 
 init(autoreset=True)
 
-# গ্লোবাল স্ট্যাটাস ট্র্যাকার
+# গ্লোবাল স্ট্যাটাস ট্র্যাকার ও ইঞ্জিন রেফারেন্স
+engine_ref = None
 service_status = {
     "assistant_connected": False,
     "assistant_name": None,
@@ -29,7 +30,7 @@ def print_banner():
     banner = f"""
 {Fore.RED + Style.BRIGHT}╔══════════════════════════════════════════════════════════════════════╗
 ║  {Fore.WHITE + Style.BRIGHT}🛡️  TELEGRAM ANTI-DDOS SENTINEL (LIVE SHIELD PRO v1.0)             {Fore.RED}║
-║  {Fore.YELLOW}পাবলিক বট: @LiveShieldXBot | সার্বক্ষণিক লাইভ স্ট্রিম সুরক্ষা        {Fore.RED}║
+║  {Fore.YELLOW}ক্লাউডফায়ার এজ + রেন্ডার ডুয়াল ব্যাকএন্ড | সার্বক্ষণিক লাইভ সুরক্ষা  {Fore.RED}║
 ╚══════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
 """
     print(banner)
@@ -40,6 +41,7 @@ async def handle_health(request):
     return web.json_response({
         "status": "online",
         "shield": "active",
+        "platform": "Render MTProto Sentinel + Cloudflare Workers Edge",
         "assistant_connected": service_status["assistant_connected"],
         "assistant_name": service_status["assistant_name"],
         "assistant_id": service_status["assistant_id"],
@@ -58,6 +60,23 @@ async def handle_forensics(request):
         "forensics": logs
     })
 
+async def handle_register_channel(request):
+    """ক্লাউডফায়ার এজ ওয়ার্কার থেকে ইনস্ট্যান্ট চ্যানেল রেজিস্ট্রেশন হ্যান্ডলার"""
+    try:
+        data = await request.json()
+        cid = data.get("channel_id")
+        title = data.get("title", "")
+        username = data.get("username", "")
+        added_by = data.get("added_by", config.ADMIN_ID)
+        if cid:
+            add_channel(cid, title, username, added_by)
+            if engine_ref:
+                await engine_ref.refresh_channels()
+            print(Fore.GREEN + f"[+] ক্লাউডফায়ার থেকে চ্যানেল সিঙ্ক: {title} ({cid})")
+        return web.json_response({"ok": True, "registered": cid})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+
 async def start_keepalive_server():
     """রেন্ডারের ফ্রি সার্ভারকে ঘুম থেকে বিরত রাখার ওয়েব পোর্ট"""
     port = int(os.getenv("PORT", "10000"))
@@ -65,6 +84,7 @@ async def start_keepalive_server():
     app.router.add_get("/", handle_health)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/forensics", handle_forensics)
+    app.router.add_post("/api/register_channel", handle_register_channel)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -72,7 +92,29 @@ async def start_keepalive_server():
     await site.start()
     print(Fore.GREEN + f"[✓] ক্লাউড কিপ-অ্যালাইভ ওয়েব পোর্ট সক্রিয়: পোর্ট {port}")
 
+async def sync_cloudflare_channels(engine):
+    """ক্লাউডফায়ার ডি১ ডাটাবেজ থেকে স্বয়ংক্রিয় চ্যানেল সিঙ্ক লুপ"""
+    cf_url = "https://liveshield-bot.dktolha.workers.dev/api/channels"
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(cf_url, timeout=10) as resp:
+                    if resp.status == 200:
+                        chans = await resp.json()
+                        for c in chans:
+                            add_channel(
+                                c["channel_id"],
+                                c.get("channel_title", ""),
+                                c.get("channel_username", ""),
+                                c.get("added_by_user_id", config.ADMIN_ID)
+                            )
+                        await engine.refresh_channels()
+            except Exception:
+                pass
+            await asyncio.sleep(20)
+
 async def main():
+    global engine_ref
     print_banner()
 
     # ১. ডাটাবেজ তৈরি ও লোড
@@ -112,12 +154,13 @@ async def main():
         assistant_client=assistant_client,
         scan_interval=config.SCAN_INTERVAL_SECONDS
     )
+    engine_ref = engine
 
-    print(Fore.WHITE + Style.BRIGHT + f"\n[🔥 সাকসেস!] @LiveShieldXBot এখন পুরোপুরি লাইভ ও সক্রিয়!")
-    print(Fore.WHITE + f"[*] যে কোনো ইউজার বা বন্ধু বটে গিয়ে /start দিয়ে চ্যানেল সুরক্ষিত করতে পারবে।\n")
+    print(Fore.WHITE + Style.BRIGHT + f"\n[🔥 সাকসেস!] @LiveShieldXBot ক্লাউডফায়ার এজ + রেন্ডার ডুয়াল আর্কিটেকচারে সম্পূর্ণ সক্রিয়!")
+    print(Fore.WHITE + f"[*] সমস্ত বট মেসেজ ও কমান্ড ক্লাউডফায়ার এজ থেকে আগুনের গতিতে (<10ms) চলছে।\n")
 
-    # ৫. প্যারালালি ডিফেন্স ইঞ্জিন এবং Bot API পোলিং চালানো
-    tasks = [run_bot_polling(engine)]
+    # ৫. সেন্টিনেল ডিফেন্স ইঞ্জিন এবং ক্লাউডফায়ার সিঙ্ক লুপ চালানো
+    tasks = [sync_cloudflare_channels(engine)]
     if assistant_client:
         tasks.append(engine.start())
         tasks.append(assistant_client.run_until_disconnected())
