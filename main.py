@@ -39,7 +39,7 @@ async def handle_health(request):
 
 async def start_keepalive_server():
     """রেন্ডারের ফ্রি সার্ভারকে ঘুম থেকে বিরত রাখার ওয়েব পোর্ট"""
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("PORT", "10000"))
     app = web.Application()
     app.router.add_get("/", handle_health)
     app.router.add_get("/health", handle_health)
@@ -58,24 +58,24 @@ async def main():
     stats = get_stats()
     print(Fore.CYAN + f"[*] ডাটাবেজ সচল: {stats['total_protected_channels']} টি চ্যানেল সুরক্ষায় আছে।")
 
-    # সেশন পাথ
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    bot_session = os.path.join(base_dir, "bot_session")
+    # ২. দ্রুত ক্লাউড ওয়েব পোর্ট চালু করা (Render Healthcheck দ্রুত পাস করার জন্য)
+    await start_keepalive_server()
 
-    # ২. পাবলিক চ্যাটবট ক্লায়েন্ট চালু করা (@LiveShieldXBot)
+    # ৩. পাবলিক চ্যাটবট ক্লায়েন্ট চালু করা (@LiveShieldXBot)
     print(Fore.CYAN + "[*] পাবলিক টেলিগ্রাম বট কানেক্ট করা হচ্ছে...")
-    bot_client = TelegramClient(bot_session, config.API_ID, config.API_HASH)
+    bot_client = TelegramClient(StringSession(), config.API_ID, config.API_HASH)
     await bot_client.start(bot_token=config.BOT_TOKEN)
     bot_me = await bot_client.get_me()
     print(Fore.GREEN + Style.BRIGHT + f"[✓] পাবলিক বট সফলভাবে সক্রিয়: {bot_me.first_name} (@{bot_me.username})")
 
-    # ৩. অ্যাসিস্ট্যান্ট ক্লায়েন্ট চালু করা (StringSession অথবা লোকাল ফাইল)
+    # ৪. অ্যাসিস্ট্যান্ট ক্লায়েন্ট চালু করা (StringSession অথবা লোকাল ফাইল)
     print(Fore.CYAN + "[*] অ্যাসিস্ট্যান্ট ডিফেন্স ক্লায়েন্ট কানেক্ট করা হচ্ছে...")
     if config.SESSION_STRING:
         print(Fore.GREEN + "[*] ক্লাউড সেশন স্ট্রিং ডিটেক্ট হয়েছে (Headless Mode)")
         assistant_client = TelegramClient(StringSession(config.SESSION_STRING), config.API_ID, config.API_HASH)
         await assistant_client.start()
     else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
         assistant_session = os.path.join(base_dir, "assistant_session")
         assistant_client = TelegramClient(assistant_session, config.API_ID, config.API_HASH)
         await assistant_client.start(phone=config.PHONE_NUMBER)
@@ -83,7 +83,7 @@ async def main():
     asst_me = await assistant_client.get_me()
     print(Fore.GREEN + Style.BRIGHT + f"[✓] অ্যাসিস্ট্যান্ট ক্লায়েন্ট সক্রিয়: {asst_me.first_name} (@{asst_me.username or asst_me.phone})")
 
-    # ৪. ইঞ্জিন ও হ্যান্ডলার ইনিশিয়ালাইজ
+    # ৫. ইঞ্জিন ও হ্যান্ডলার ইনিশিয়ালাইজ
     engine = MultiShieldEngine(
         assistant_client=assistant_client,
         bot_client=bot_client,
@@ -92,14 +92,13 @@ async def main():
     register_bot_handlers(bot_client, engine)
     print(Fore.GREEN + "[✓] চ্যাটবট কমান্ড হ্যান্ডলার ও বাটন সক্রিয় হয়েছে।")
 
-    # ৫. ওয়েব হেলথচেক পোর্ট ও ডিফেন্স লুপ চালু
+    # ৬. ডিফেন্স লুপ চালু
     print(Fore.WHITE + Style.BRIGHT + f"\n[🔥 সাকসেস!] @LiveShieldXBot এখন পুরোপুরি লাইভ ও সক্রিয়!")
     print(Fore.WHITE + f"[*] যে কোনো ইউজার বা বন্ধু বটে গিয়ে /start দিয়ে চ্যানেল সুরক্ষিত করতে পারবে।\n")
 
     try:
         await asyncio.gather(
             engine.start(),
-            start_keepalive_server(),
             bot_client.run_until_disconnected(),
             assistant_client.run_until_disconnected()
         )

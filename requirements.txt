@@ -2,3 +2,5 @@ telethon>=1.36.0
 python-dotenv>=1.0.0
 colorama>=0.4.6
 aiofiles>=23.2.1
+aiohttp>=3.9.0
+TgCrypto>=1.2.5
