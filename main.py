@@ -1,12 +1,13 @@
 """
 Telegram Anti-DDoS Sentinel Guard - Dual Engine Controller
-পাবলিক বট (@LiveShieldXBot) এবং অ্যাসিস্ট্যান্ট ডিফেন্স ইঞ্জিন (Local & Cloud Ready)
+পাবলিক বট (@LiveShieldXBot) এবং অ্যাসিস্ট্যান্ট ডিফেন্স ইঞ্জিন (Render, Heroku & Cloud 24/7 Ready)
 """
 import asyncio
 import os
 import sys
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from aiohttp import web
 from colorama import Fore, Style, init
 
 import config
@@ -24,6 +25,30 @@ def print_banner():
 ╚══════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
 """
     print(banner)
+
+async def handle_health(request):
+    """Render বা যেকোনো ক্লাউডের জন্য হেলথচেক পোর্ট (২৪/৭ সজাগ রাখার জন্য)"""
+    stats = get_stats()
+    return web.json_response({
+        "status": "online",
+        "shield": "active",
+        "bot": "@LiveShieldXBot",
+        "protected_channels": stats["total_protected_channels"],
+        "attacks_blocked": stats["total_attacks_blocked"]
+    })
+
+async def start_keepalive_server():
+    """রেন্ডারের ফ্রি সার্ভারকে ঘুম থেকে বিরত রাখার ওয়েব পোর্ট"""
+    port = int(os.getenv("PORT", "8080"))
+    app = web.Application()
+    app.router.add_get("/", handle_health)
+    app.router.add_get("/health", handle_health)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(Fore.GREEN + f"[✓] ক্লাউড কিপ-অ্যালাইভ ওয়েব পোর্ট সক্রিয়: পোর্ট {port}")
 
 async def main():
     print_banner()
@@ -67,13 +92,14 @@ async def main():
     register_bot_handlers(bot_client, engine)
     print(Fore.GREEN + "[✓] চ্যাটবট কমান্ড হ্যান্ডলার ও বাটন সক্রিয় হয়েছে।")
 
-    # ৫. সার্বক্ষণিক ডিফেন্স লুপ চালু
+    # ৫. ওয়েব হেলথচেক পোর্ট ও ডিফেন্স লুপ চালু
     print(Fore.WHITE + Style.BRIGHT + f"\n[🔥 সাকসেস!] @LiveShieldXBot এখন পুরোপুরি লাইভ ও সক্রিয়!")
     print(Fore.WHITE + f"[*] যে কোনো ইউজার বা বন্ধু বটে গিয়ে /start দিয়ে চ্যানেল সুরক্ষিত করতে পারবে।\n")
 
     try:
         await asyncio.gather(
             engine.start(),
+            start_keepalive_server(),
             bot_client.run_until_disconnected(),
             assistant_client.run_until_disconnected()
         )
