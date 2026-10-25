@@ -17,6 +17,13 @@ from core.bot_api_engine import run_bot_polling
 
 init(autoreset=True)
 
+# গ্লোবাল স্ট্যাটাস ট্র্যাকার
+service_status = {
+    "assistant_connected": False,
+    "assistant_name": None,
+    "assistant_id": None
+}
+
 def print_banner():
     banner = f"""
 {Fore.RED + Style.BRIGHT}╔══════════════════════════════════════════════════════════════════════╗
@@ -27,11 +34,14 @@ def print_banner():
     print(banner)
 
 async def handle_health(request):
-    """Render হেলথচেক পোর্ট (২৪/৭ সজাগ রাখার জন্য)"""
+    """Render হেলথচেক পোর্ট (২৪/৭ সজাগ রাখার জন্য ও লাইভ স্ট্যাটাস মনিটরিং)"""
     stats = get_stats()
     return web.json_response({
         "status": "online",
         "shield": "active",
+        "assistant_connected": service_status["assistant_connected"],
+        "assistant_name": service_status["assistant_name"],
+        "assistant_id": service_status["assistant_id"],
         "bot": "@LiveShieldXBot",
         "protected_channels": stats["total_protected_channels"],
         "attacks_blocked": stats["total_attacks_blocked"]
@@ -61,7 +71,7 @@ async def main():
     # ২. দ্রুত ক্লাউড ওয়েব পোর্ট চালু করা
     await start_keepalive_server()
 
-    # ৩. অ্যাসিস্ট্যান্ট ক্লায়েন্ট সেফ-কানেক্ট (কোনো কারণে এরর দিলে বট যাতে না থামে)
+    # ৩. অ্যাসিস্ট্যান্ট ক্লায়েন্ট সেফ-কানেক্ট
     assistant_client = None
     if config.SESSION_STRING:
         print(Fore.CYAN + "[*] অ্যাসিস্ট্যান্ট ক্লায়েন্ট ইনিশিয়ালাইজ করা হচ্ছে...")
@@ -70,12 +80,15 @@ async def main():
             await assistant_client.connect()
             if await assistant_client.is_user_authorized():
                 asst_me = await assistant_client.get_me()
-                print(Fore.GREEN + Style.BRIGHT + f"[✓] অ্যাসিস্ট্যান্ট সক্রিয়: {asst_me.first_name}")
+                service_status["assistant_connected"] = True
+                service_status["assistant_name"] = asst_me.first_name
+                service_status["assistant_id"] = asst_me.id
+                print(Fore.GREEN + Style.BRIGHT + f"[✓] অ্যাসিস্ট্যান্ট সক্রিয়: {asst_me.first_name} (ID: {asst_me.id})")
             else:
                 print(Fore.YELLOW + "[!] অ্যাসিস্ট্যান্ট সেশন অথোরাইজড নয়, একক বট মোডে চলবে।")
                 assistant_client = None
         except Exception as e:
-            print(Fore.YELLOW + f"[!] অ্যাসিস্ট্যান্ট ক্লায়েন্ট সতর্কতা (একক বট মোড সক্রিয়): {e}")
+            print(Fore.YELLOW + f"[!] অ্যাসিস্ট্যান্ট ক্লায়েন্ট সতর্কতা: {e}")
             assistant_client = None
 
     # ৪. ইঞ্জিন ইনিশিয়ালাইজ

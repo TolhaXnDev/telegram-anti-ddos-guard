@@ -34,8 +34,25 @@ class MultiShieldEngine:
             current_ids.add(cid)
             if cid not in self.monitored_channels:
                 try:
-                    target = c["channel_username"] if c["channel_username"] else cid
-                    peer = await self.assistant_client.get_input_entity(target)
+                    if c["channel_username"]:
+                        target = c["channel_username"]
+                    else:
+                        try:
+                            target = int(cid)
+                        except (ValueError, TypeError):
+                            target = cid
+
+                    try:
+                        peer = await self.assistant_client.get_input_entity(target)
+                    except Exception:
+                        try:
+                            # প্রাইভেট চ্যানেল বা গ্রুপের ডায়লগ ক্যাশ সিঙ্ক
+                            await self.assistant_client.get_dialogs(limit=50)
+                            peer = await self.assistant_client.get_input_entity(target)
+                        except Exception as e2:
+                            print(Fore.YELLOW + f"[!] চ্যানেল এন্টিটি পাওয়া যায়নি: {c['channel_title']} ({target}) - {e2}")
+                            continue
+
                     self.monitored_channels[cid] = {
                         "title": c["channel_title"],
                         "username": c["channel_username"],
@@ -120,6 +137,8 @@ class MultiShieldEngine:
                 channel_data["last_known_call_id"] = new_call.id
                 try:
                     hunter = SnifferHunter(self.assistant_client, channel_data["peer"])
+                    if channel_data.get("owner_id"):
+                        hunter.known_safe_users.add(channel_data["owner_id"])
                     await hunter.secure_call_permissions(channel_data["active_call_input"])
                 except Exception:
                     pass
@@ -143,13 +162,26 @@ class MultiShieldEngine:
                 try:
                     call = await self.get_channel_call(data["peer"])
                     if call:
+                        # লাইভ কল সক্রিয় আছে
                         if data["last_known_call_id"] != call.id:
                             data["last_known_call_id"] = call.id
                             data["active_call_input"] = types.InputGroupCall(id=call.id, access_hash=call.access_hash)
                             hunter = SnifferHunter(self.assistant_client, data["peer"])
+                            if data.get("owner_id"):
+                                hunter.known_safe_users.add(data["owner_id"])
                             await hunter.secure_call_permissions(data["active_call_input"])
+                            print(Fore.GREEN + f"[🛡️] লাইভ কল সুরক্ষিত ও হার্ড-লক করা হয়েছে: {data['title']}")
+
+                        # প্রতি ৫ সেকেন্ড পরপর পার্টিসিপেন্ট স্ক্যান করে স্নিফার/ইউজারবটের আনমিউট প্রতিহত করা
+                        if scan_cycle % 10 == 0 and data.get("active_call_input"):
+                            hunter = SnifferHunter(self.assistant_client, data["peer"])
+                            if data.get("owner_id"):
+                                hunter.known_safe_users.add(data["owner_id"])
+                            await hunter.scan_and_neutralize_participants(data["active_call_input"])
                     else:
+                        # যদি পূর্বে কল চালু ছিল এবং এখন হঠাৎ ড্রপ করেছে (আক্রমণ হয়েছে)
                         if data["last_known_call_id"] is not None:
+                            print(Fore.RED + f"[⚠️ আক্রমণ শনাক্ত!] কল ড্রপ করেছে: {data['title']}. সাথে সাথে রিকভার করা হচ্ছে...")
                             await self.respawn_call(cid, data, data["last_known_call_id"])
                 except Exception:
                     pass
