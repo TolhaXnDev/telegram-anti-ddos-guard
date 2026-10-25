@@ -19,6 +19,7 @@ init(autoreset=True)
 
 # গ্লোবাল স্ট্যাটাস ট্র্যাকার ও ইঞ্জিন রেফারেন্স
 engine_ref = None
+assistant_client_ref = None
 service_status = {
     "assistant_connected": False,
     "assistant_name": None,
@@ -60,19 +61,89 @@ async def handle_forensics(request):
         "forensics": logs
     })
 
+async def handle_join_chat(request):
+    """অ্যাসিস্ট্যান্টকে স্বয়ংক্রিয়ভাবে গ্রুপ বা চ্যানেলে জয়েন করানো"""
+    global assistant_client_ref
+    try:
+        data = await request.json()
+        invite_link = data.get("invite_link")
+        username = data.get("username")
+        
+        if not assistant_client_ref:
+            return web.json_response({"ok": False, "error": "Assistant client not connected"}, status=503)
+            
+        import re
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.errors import UserAlreadyParticipantError
+        
+        if invite_link:
+            match = re.search(r"t\.me/(?:\+|joinchat/)([a-zA-Z0-9_-]+)", invite_link)
+            if match:
+                invite_hash = match.group(1)
+                try:
+                    await assistant_client_ref(ImportChatInviteRequest(invite_hash))
+                    print(Fore.GREEN + f"[✓] অ্যাসিস্ট্যান্ট স্বয়ংক্রিয়ভাবে ইনভাইট দিয়ে জয়েন করেছে: {invite_link}")
+                    return web.json_response({"ok": True, "joined": True, "method": "invite_link"})
+                except UserAlreadyParticipantError:
+                    return web.json_response({"ok": True, "joined": True, "already_member": True})
+                except Exception as e:
+                    print(Fore.YELLOW + f"[!] ইনভাইট লিংক জয়েন ব্যর্থ: {e}")
+                    return web.json_response({"ok": False, "error": str(e)}, status=400)
+        
+        if username:
+            clean_user = username.replace("@", "")
+            try:
+                await assistant_client_ref(JoinChannelRequest(clean_user))
+                print(Fore.GREEN + f"[✓] অ্যাসিস্ট্যান্ট পাবলিক ইউজারনেমে জয়েন করেছে: @{clean_user}")
+                return web.json_response({"ok": True, "joined": True, "method": "username"})
+            except UserAlreadyParticipantError:
+                return web.json_response({"ok": True, "joined": True, "already_member": True})
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+                
+        return web.json_response({"ok": False, "error": "No invite_link or username provided"}, status=400)
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
 async def handle_register_channel(request):
-    """ক্লাউডফায়ার এজ ওয়ার্কার থেকে ইনস্ট্যান্ট চ্যানেল রেজিস্ট্রেশন হ্যান্ডলার"""
+    """ক্লাউডফায়ার এজ ওয়ার্কার থেকে ইনস্ট্যান্ট চ্যানেল রেজিস্ট্রেশন ও অ্যাসিস্ট্যান্ট অটো-জয়েন"""
+    global assistant_client_ref
     try:
         data = await request.json()
         cid = data.get("channel_id")
         title = data.get("title", "")
         username = data.get("username", "")
         added_by = data.get("added_by", config.ADMIN_ID)
+        invite_link = data.get("invite_link", "")
+
         if cid:
             add_channel(cid, title, username, added_by)
             if engine_ref:
                 await engine_ref.refresh_channels()
             print(Fore.GREEN + f"[+] ক্লাউডফায়ার থেকে চ্যানেল সিঙ্ক: {title} ({cid})")
+
+            # অ্যাসিস্ট্যান্ট যদি কানেক্টেড থাকে এবং ইনভাইট লিংক বা ইউজারনেম থাকে, স্বয়ংক্রিয় জয়েন চেষ্টা
+            if assistant_client_ref:
+                if invite_link:
+                    import re
+                    match = re.search(r"t\.me/(?:\+|joinchat/)([a-zA-Z0-9_-]+)", invite_link)
+                    if match:
+                        try:
+                            from telethon.tl.functions.messages import ImportChatInviteRequest
+                            from telethon.errors import UserAlreadyParticipantError
+                            await assistant_client_ref(ImportChatInviteRequest(match.group(1)))
+                            print(Fore.GREEN + f"[✓] অ্যাসিস্ট্যান্ট অটো-জয়েন সফল: {title}")
+                        except Exception as e:
+                            print(Fore.YELLOW + f"[!] অটো-জয়েন ব্যাকগ্রাউন্ড সতর্কতা: {e}")
+                elif username:
+                    try:
+                        from telethon.tl.functions.channels import JoinChannelRequest
+                        await assistant_client_ref(JoinChannelRequest(username.replace("@", "")))
+                        print(Fore.GREEN + f"[✓] অ্যাসিস্ট্যান্ট অটো-জয়েন সফল: @{username}")
+                    except Exception as e:
+                        print(Fore.YELLOW + f"[!] অটো-জয়েন ব্যাকগ্রাউন্ড সতর্কতা: {e}")
+
         return web.json_response({"ok": True, "registered": cid})
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=400)
@@ -85,6 +156,7 @@ async def start_keepalive_server():
     app.router.add_get("/health", handle_health)
     app.router.add_get("/forensics", handle_forensics)
     app.router.add_post("/api/register_channel", handle_register_channel)
+    app.router.add_post("/api/join_chat", handle_join_chat)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -134,6 +206,7 @@ async def main():
             await assistant_client.connect()
             if await assistant_client.is_user_authorized():
                 asst_me = await assistant_client.get_me()
+                assistant_client_ref = assistant_client
                 service_status["assistant_connected"] = True
                 service_status["assistant_name"] = asst_me.first_name
                 service_status["assistant_id"] = asst_me.id
